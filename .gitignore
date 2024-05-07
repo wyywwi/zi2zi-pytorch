@@ -135,6 +135,8 @@ test.py
 
 # shufa_pic
 shufa_pic/
+test-imgs/
+test-imgs/yan/
 
 # sample
 samples/

@@ -6,7 +6,7 @@ import sys
 import argparse
 import numpy as np
 
-from PIL import Image, ImageFont, ImageDraw
+from PIL import Image, ImageFont, ImageDraw, ImageOps
 import json
 import collections
 import re
@@ -14,8 +14,8 @@ from fontTools.ttLib import TTFont
 from tqdm import tqdm
 import random
 
-from torch import nn
-from torchvision import transforms
+# from torch import nn
+# from torchvision import transforms
 
 from utils.charset_util import processGlyphNames
 
@@ -59,27 +59,32 @@ def draw_single_char(ch, font, canvas_size, x_offset=0, y_offset=0):
     img = Image.fromarray(img)
     # img.show()
     width, height = img.size
-    # Convert PIL.Image to FloatTensor, scale from 0 to 1, 0 = black, 1 = white
-    try:
-        img = transforms.ToTensor()(img)
-    except SystemError:
-        return None
-    img = img.unsqueeze(0)  # 加轴
-    pad_len = int(abs(width - height) / 2)  # 预填充区域的大小
-    # 需要填充区域，如果宽大于高则上下填充，否则左右填充
+    # 将Pillow图像转换为NumPy数组
+    img_array = np.array(img)
+    # 计算需要填充的长度并创建填充
+    pad_len = int(abs(width - height) / 2)
     if width > height:
-        fill_area = (0, 0, pad_len, pad_len)
+        img_array = np.pad(img_array, ((pad_len, pad_len), (0, 0)), 'constant', constant_values=255)
     else:
-        fill_area = (pad_len, pad_len, 0, 0)
-    # 填充像素常值
-    fill_value = 1
-    img = nn.ConstantPad2d(fill_area, fill_value)(img)
-    # img = nn.ZeroPad2d(m)(img) #直接填0
-    img = img.squeeze(0)  # 去轴
-    img = transforms.ToPILImage()(img)
-    img = img.resize((canvas_size, canvas_size), Image.ANTIALIAS)
+        img_array = np.pad(img_array, ((0, 0), (pad_len, pad_len)), 'constant', constant_values=255)
+    # 将NumPy数组转回Pillow图像
+    img = Image.fromarray(img_array)
+    img = img.resize((canvas_size, canvas_size), Image.LANCZOS)
     return img
 
+# 对非正方形图片的处理
+def resize_and_pad_image(dst_img, canvas_size):
+    # 计算原始图像的宽度和高度，取较大值
+    original_width, original_height = dst_img.size
+    square_side_length = max(original_width, original_height)
+    new_img = Image.new("RGB", (square_side_length, square_side_length), (255, 255, 255))
+    # 居中放置
+    left = (square_side_length - original_width) // 2
+    top = (square_side_length - original_height) // 2
+    new_img.paste(dst_img, (left, top))
+    # 调整尺寸
+    resized_img = new_img.resize((canvas_size, canvas_size), Image.LANCZOS).convert('RGB')
+    return resized_img
 
 def draw_font2font_example(ch, src_font, dst_font, canvas_size, x_offset, y_offset, filter_hashes):
     dst_img = draw_single_char(ch, dst_font, canvas_size, x_offset, y_offset)
@@ -98,7 +103,11 @@ def draw_font2font_example(ch, src_font, dst_font, canvas_size, x_offset, y_offs
 
 def draw_font2imgs_example(ch, src_font, dst_img, canvas_size, x_offset, y_offset):
     src_img = draw_single_char(ch, src_font, canvas_size, x_offset, y_offset)
-    dst_img = dst_img.resize((canvas_size, canvas_size), Image.ANTIALIAS).convert('RGB')
+    # dst_img = dst_img.resize((canvas_size, canvas_size), Image.LANCZOS).convert('RGB')
+    # simply check if the image exist, if not return None
+    if not src_img:
+        return None
+    dst_img = resize_and_pad_image(dst_img, canvas_size)
     example_img = Image.new("RGB", (canvas_size * 2, canvas_size), (255, 255, 255))
     example_img.paste(dst_img, (0, 0))
     example_img.paste(src_img, (canvas_size, 0))
@@ -108,8 +117,8 @@ def draw_font2imgs_example(ch, src_font, dst_img, canvas_size, x_offset, y_offse
 
 
 def draw_imgs2imgs_example(src_img, dst_img, canvas_size):
-    src_img = src_img.resize((canvas_size, canvas_size), Image.ANTIALIAS).convert('RGB')
-    dst_img = dst_img.resize((canvas_size, canvas_size), Image.ANTIALIAS).convert('RGB')
+    src_img = src_img.resize((canvas_size, canvas_size), Image.LANCZOS).convert('RGB')
+    dst_img = dst_img.resize((canvas_size, canvas_size), Image.LANCZOS).convert('RGB')
     example_img = Image.new("RGB", (canvas_size * 2, canvas_size), (255, 255, 255))
     example_img.paste(dst_img, (0, 0))
     example_img.paste(src_img, (canvas_size, 0))
@@ -158,6 +167,7 @@ def font2font(src, dst, charset, char_size, canvas_size,
 
 def font2imgs(src, dst, char_size, canvas_size,
               x_offset, y_offset, sample_count, sample_dir):
+    # size: 字号大小（加载的字体字符具有大小属性）
     src_font = ImageFont.truetype(src, size=char_size)
 
     # -*- You should fill the target imgs' label_map -*-
@@ -171,11 +181,13 @@ def font2imgs(src, dst, char_size, canvas_size,
     count = 0
 
     # -*- You should fill the target imgs' regular expressions. -*-
-    pattern = re.compile('(.)~(.+)~(\d+)')
+    # pattern = re.compile('(.)~(.+)~(\d+)')
+    pattern = re.compile(r'^(.*?)~(.*?)\.')
 
     for c in tqdm(os.listdir(dst)):
         if count == sample_count:
             break
+        # print(c)
         res = re.match(pattern, c)
         ch = res[1]
         writter = res[2]
